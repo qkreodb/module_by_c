@@ -7,6 +7,7 @@
 // 워치 데이터 구조체 (사용자님의 캐시 로직 반영)
 typedef struct {
     char deviceId[64];
+    char workspaceId[64];
     double heartRate;
     double skin_temperature;
     int has_hr; // 심박수 포함 여부
