@@ -9,6 +9,6 @@ typedef struct {
     char time[32];
 } WatchData;
 
-void* watch_collector_run(void* arg);
+void* vital_module(void* arg);
 
 #endif
