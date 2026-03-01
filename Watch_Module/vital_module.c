@@ -8,7 +8,7 @@
 
 #define UDP_PORT 5005
 
-void* watch_collector_run(void* arg) {
+void* vital_module(void* arg) {
     int sock;
     struct sockaddr_in serv_addr, clnt_addr;
     socklen_t clnt_size;
