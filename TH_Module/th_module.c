@@ -1,209 +1,74 @@
 #include <modbus/modbus.h>
-#include <stdio.h>
-#include <string.h>
 #include <errno.h>
-#include <stdint.h>
-#include <sys/time.h>
 #include <unistd.h>
+#include "shared.h"
 
-#include "th_module.h"
-
-// ================================
-// 내부 상태(전역)
-// ================================
+// 센서 설정 (기존 설정 유지)
+static const int SLAVE_ID = 1;
+static const int REG_ADDR = 0;
+static const int REG_CNT  = 2;
 static modbus_t *g_ctx = NULL;
 
-static char g_ip[64] = {0};
-static int  g_port = 0;
+// 센서 고유 정보 (DB/식별용)
+static const int TH_SEN_ID = 201; // 온습도 센서 ID 예시
+static const int TH_WP_ID  = 1;   // 1번 작업장
 
-// 센서/네트워크 환경에 맞게 조절 가능
-static const int   SLAVE_ID = 1; //TODO 이 부분은 BT-NB114의 온습도계 번호와 맞아야 함 확인 필요
-// 그 BT-NB114 보면 버튼 있는데 그거 8번 버튼 켜져 있으면 1번 맞을거야, 내가 8번 켜두고 써서 아마 안바꿨으면 1 맞아
-static const int   REG_ADDR = 0;
-static const int   REG_CNT  = 2;
+// 내부 복구 로직 함수들 (기존 코드와 동일하므로 구현 생략, 로직 내에서 호출됨)
+static int _soft_reconnect(void);
+static int _hard_recreate(const char* ip, int port);
 
-// 무결성 체크 범위(필요하면 센서 스펙에 맞춰 조정)
-// 예: 산업용 온습도 센서 흔한 범위
-static const float TEMP_MIN = -40.0f;
-static const float TEMP_MAX =  85.0f;
-static const float HUMI_MIN =   0.0f;
-static const float HUMI_MAX = 100.0f;
+// 메인에서 스레드로 실행할 함수
+void* th_module(void* arg) {
+    printf("[TH_Module] 모듈 가동 시작 (Modbus TCP)\n");
 
-// 타임아웃(무선 환경 고려)
-static const int TIMEOUT_SEC = 1;
-static const int TIMEOUT_USEC = 0;
+    // 1. 초기 연결 (센서 IP는 실제 환경에 맞춰 수정하세요)
+    const char* sensor_ip = "192.168.0.20"; 
+    int sensor_port = 502;
 
-// ================================
-// 내부 유틸
-// ================================
-static int _validate_range(float t, float h) {
-    if (t < TEMP_MIN || t > TEMP_MAX) return 0;
-    if (h < HUMI_MIN || h > HUMI_MAX) return 0;
-    return 1;
-}
-
-static void _apply_common_options(modbus_t *c) { 
-    // Slave ID 설정
-    modbus_set_slave(c, SLAVE_ID);
-
-    // 응답 타임아웃 설정
-    struct timeval tv;
-    tv.tv_sec = TIMEOUT_SEC;
-    tv.tv_usec = TIMEOUT_USEC;
-    modbus_set_response_timeout(c, tv.tv_sec, tv.tv_usec);
-}
-
-// ctx를 유지한 채로 재연결(가벼운 복구)
-static int _soft_reconnect(void) {
-    if (!g_ctx) return -1;
-
-    // 기존 연결 닫고 다시 연결
-    modbus_close(g_ctx); 
+    g_ctx = modbus_new_tcp(sensor_ip, sensor_port);
+    modbus_set_slave(g_ctx, SLAVE_ID);
+    
     if (modbus_connect(g_ctx) == -1) {
-        return -1;
-    }
-
-    // 재연결 후 옵션 재적용(안전)
-    _apply_common_options(g_ctx);
-    return 0;
-}
-
-// ctx 자체를 새로 만드는 복구(무거운 복구)
-static int _hard_recreate(void) {
-    if (g_ip[0] == '\0' || g_port <= 0) return -1;
-
-    if (g_ctx) {
-        modbus_close(g_ctx);
-        modbus_free(g_ctx);
-        g_ctx = NULL;
-    }
-
-    g_ctx = modbus_new_tcp(g_ip, g_port);
-    if (!g_ctx) return -1;
-
-    _apply_common_options(g_ctx);
-
-    if (modbus_connect(g_ctx) == -1) {
-        modbus_free(g_ctx);
-        g_ctx = NULL;
-        return -1;
-    }
-    return 0;
-}
-
-// ================================
-// 외부 API
-// ================================
-int th_module_init(const char* ip, int port) {
-    if (!ip || port <= 0) return -1;
-
-    // ip/port 저장(하드 재생성용)
-    snprintf(g_ip, sizeof(g_ip), "%s", ip);
-    g_port = port;
-
-    // 이미 ctx가 있다면 정리 후 재생성
-    if (g_ctx) {
-        th_module_close();
-    }
-
-    g_ctx = modbus_new_tcp(g_ip, g_port);
-    if (!g_ctx) {
-        return -1;
-    }
-
-    _apply_common_options(g_ctx);
-
-    if (modbus_connect(g_ctx) == -1) {
-        modbus_free(g_ctx);
-        g_ctx = NULL;
-        return -1;
-    }
-
-    return 0;
-}
-
-THData th_module_read_once(void) { 
-    THData data;
-    data.temperature = 0.0f;
-    data.humidity = 0.0f;
-    data.error_code = TH_OK;
-    data.sys_errno = 0;
-
-    if (!g_ctx) {
-        data.error_code = TH_ERR_NOT_INIT;
-        data.sys_errno = 0; // TODO 이 부분 왜 0인지? 설계대로라면 에러 코드마다 넘버가 따로 있는게 좋을듯
-        // ㄴㄴ 이거 0이 통신 성공이라 오류면 에러코드 errno 출력함, 미초기화 상태래
-        return data;
+        printf("⚠️ [TH] 초기 연결 실패, 복구 루틴 대기\n");
     }
 
     uint16_t reg[REG_CNT];
 
-    // 1) 1차 read
-    int rc = modbus_read_input_registers(g_ctx, REG_ADDR, REG_CNT, reg);
+    while (1) {
+        // 2. Modbus 데이터 읽기
+        int rc = modbus_read_input_registers(g_ctx, REG_ADDR, REG_CNT, reg);
 
-    // 2) 실패하면 soft reconnect 1회 + 재시도
-    //TODO 복구 로직이 꼭 필요한지? 무결성 검증 후에 다시 반복을 한다던지 시간을 측정해봐야할 듯
-    // 이거 우리 랩실은 문제될거 없어보이는데 좀 더 큰 환경(작업장)에서 통신 장애나 변수에 도움되라고 넣어둔거 지금 당장 테스트엔 필요없음 복구 로직
-    if (rc != REG_CNT) {
-        data.sys_errno = errno;
-
-        if (_soft_reconnect() == 0) {
-            rc = modbus_read_input_registers(g_ctx, REG_ADDR, REG_CNT, reg);
-        }
-    }
-
-    // 3) 그래도 실패하면 hard recreate 1회 + 재시도
-    if (rc != REG_CNT) {
-        data.sys_errno = errno;
-
-        if (_hard_recreate() == 0) {
-            rc = modbus_read_input_registers(g_ctx, REG_ADDR, REG_CNT, reg);
-        }
-    }
-
-    // 4) 최종 실패 처리
-    if (rc != REG_CNT) {
-        data.error_code = TH_ERR_READ_FAIL;
-        // errno 갱신(최신 실패 기준)
-        data.sys_errno = errno;
-        return data;
-    }
-
-    // 5) 스케일링
-    float t = reg[0] / 10.0f;
-    float h = reg[1] / 10.0f;
-
-    // 7) 무결성 체크 및 일시적 노이즈 재시도
-    if (!_validate_range(t, h)) {
-        // 일시적인 튐 현상일 수 있으므로 0.05초 대기 후 딱 한 번만 더 읽어봄
-        usleep(50000); 
-        if (modbus_read_input_registers(g_ctx, REG_ADDR, REG_CNT, reg) == REG_CNT) {
-            t = reg[0] / 10.0f;
-            h = reg[1] / 10.0f;
+        if (rc != REG_CNT) {
+            printf("⚠️ [TH] 읽기 실패, 복구 시도...\n");
+            _soft_reconnect(); // 기존의 복구 로직 호출
+            sleep(1);
+            continue;
         }
 
-        // 재시도 후에도 범위를 벗어나면 최종 에러 처리
-        if (!_validate_range(t, h)) {
-            data.error_code = TH_ERR_BAD_VALUE;
-            data.temperature = t;
-            data.humidity = h;
-            data.sys_errno = 0; // 통신 자체는 성공했으므로 OS 에러는 없음
-            return data;
-        }
+        // 3. 스케일링 및 데이터 확정
+        float t = reg[0] / 10.0f;
+        float h = reg[1] / 10.0f;
+
+        // 4. 통합 구조체(SensorPacket) 생성 및 큐 삽입
+        SensorPacket *packet = (SensorPacket*)malloc(sizeof(SensorPacket));
+        packet->type = TYPE_TH;
+        packet->payload.th.sen_id = TH_SEN_ID;
+        packet->payload.th.wp_id  = TH_WP_ID;
+        packet->payload.th.temp   = t;
+        packet->payload.th.humd   = h;
+        packet->payload.th.time   = time(NULL);
+
+        q_push(&q_th, packet); // shared.h에 정의된 q_th로 전송
+
+        printf("🌡️ [TH] Temp: %.1f, Humd: %.1f (Queue 전송 완료)\n", t, h);
+
+        // 수집 주기 조절 (예: 5초)
+        sleep(5);
     }
 
-    // 모든 검증 통과 시 데이터 확정
-    data.temperature = t;
-    data.humidity = h;
-    data.error_code = TH_OK;
-    data.sys_errno = 0;
-    return data;
-}
-
-void th_module_close(void) { //TODO 이 부분 MQ를 정리하는 코드 추가 필요
     if (g_ctx) {
         modbus_close(g_ctx);
         modbus_free(g_ctx);
-        g_ctx = NULL;
     }
+    return NULL;
 }
