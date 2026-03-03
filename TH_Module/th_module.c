@@ -29,7 +29,7 @@ void* th_module(void* arg) {
     modbus_set_slave(g_ctx, SLAVE_ID);
     
     if (modbus_connect(g_ctx) == -1) {
-        printf("⚠️ [TH] 초기 연결 실패, 복구 루틴 대기\n");
+        printf("[TH] 초기 연결 실패, 복구 루틴 대기\n");
     }
 
     uint16_t reg[REG_CNT];
@@ -39,7 +39,7 @@ void* th_module(void* arg) {
         int rc = modbus_read_input_registers(g_ctx, REG_ADDR, REG_CNT, reg);
 
         if (rc != REG_CNT) {
-            printf("⚠️ [TH] 읽기 실패, 복구 시도...\n");
+            printf("[TH] 읽기 실패, 복구 시도...\n");
             _soft_reconnect(); // 기존의 복구 로직 호출
             sleep(1);
             continue;
@@ -60,7 +60,7 @@ void* th_module(void* arg) {
 
         q_push(&q_th, packet); // shared.h에 정의된 q_th로 전송
 
-        printf("🌡️ [TH] Temp: %.1f, Humd: %.1f (Queue 전송 완료)\n", t, h);
+        printf("[TH] Temp: %.1f, Humd: %.1f (Queue 전송 완료)\n", t, h);
 
         // 수집 주기 조절 (예: 5초)
         sleep(5);
