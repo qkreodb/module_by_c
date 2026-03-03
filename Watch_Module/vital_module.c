@@ -26,7 +26,8 @@ void* vital_module(void* arg) {
             packet->type = TYPE_VITAL;
             
             // JSON -> VitalData 구조체 매핑
-            packet->payload.vital.sen_id = cJSON_GetObjectItem(root, "sen_id")->valueint; 
+            packet->payload.vital.sen_id = cJSON_GetObjectItem(root, "sen_id")->valueint;
+            packet->payload.vital.wp_id = cJSON_GetObjectItem(root, "wp_id")->valueint;
             packet->payload.vital.hr = (float)cJSON_GetObjectItem(root, "hr")->valuedouble;
             packet->payload.vital.sk_temp = (float)cJSON_GetObjectItem(root, "sk_temp")->valuedouble;
             packet->payload.vital.time = time(NULL);
